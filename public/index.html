@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FER Meet | Rooms</title>
+    <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body class="home-page">
+    <main class="home-shell">
+        <section class="hero-panel">
+            <div class="brand-row">
+                <div class="brand-mark" aria-hidden="true">F</div>
+                <div>
+                    <p class="eyebrow">Facial Emotion Recognition</p>
+                    <h1>FER Meet</h1>
+                </div>
+            </div>
+
+            <p class="hero-copy">
+                A responsive learning session workspace with real-time video, emotion signals,
+                attention analytics, chat, and AI feedback.
+            </p>
+
+            <div class="signal-strip" aria-label="System capabilities">
+                <span>Live Video</span>
+                <span>Emotion AI</span>
+                <span>Head Pose</span>
+                <span>Instructor Analytics</span>
+            </div>
+        </section>
+
+        <section class="join-card" aria-labelledby="joinTitle">
+            <div class="section-heading">
+                <p class="eyebrow">Create or join</p>
+                <h2 id="joinTitle">Start a session</h2>
+            </div>
+
+            <div class="form-grid">
+                <div class="field">
+                    <label for="name">Your name</label>
+                    <input id="name" autocomplete="name" placeholder="e.g., Omar" />
+                </div>
+
+                <div class="field">
+                    <label for="role">Role</label>
+                    <select id="role">
+                        <option value="student">Student</option>
+                        <option value="instructor">Instructor</option>
+                    </select>
+                </div>
+
+                <div class="field span-2">
+                    <label for="room">Room code</label>
+                    <input id="room" autocomplete="off" placeholder="Leave empty when creating a new room" />
+                </div>
+            </div>
+
+            <label class="consent-card" for="consent">
+                <input id="consent" type="checkbox" />
+                <span>
+                    I understand this demo may analyze facial expressions during the session.
+                </span>
+            </label>
+
+            <div class="controls action-row">
+                <button class="btn" id="createBtn" type="button">
+                    <span class="btn-label">Create New Room</span>
+                </button>
+                <button class="btn secondary" id="joinBtn" type="button">
+                    <span class="btn-label">Join Room</span>
+                </button>
+            </div>
+
+        </section>
+    </main>
+
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

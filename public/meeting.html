@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FER Meet | Meeting</title>
+    <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body class="meeting-page">
+    <header class="topbar">
+        <div class="meeting-meta">
+            <a class="brand-mini" href="/" aria-label="FER Meet home">
+                <span class="brand-mark small" aria-hidden="true">F</span>
+                <span>FER Meet</span>
+            </a>
+            <div class="badge">Room <b id="roomLabel">-</b></div>
+            <div class="badge">You <b id="youLabel">-</b></div>
+            <div class="badge" id="roleBadge">Role: -</div>
+            <div class="status-pill pending" id="status">Preparing...</div>
+        </div>
+        <div class="controls meeting-controls">
+            <button class="btn ghost" id="copyLinkBtn" type="button">Copy Invite</button>
+            <button class="btn secondary" id="enableAudioBtn" type="button">Enable Sound</button>
+            <button class="btn secondary" id="toggleCamBtn" type="button">Camera On</button>
+            <button class="btn secondary" id="toggleMicBtn" type="button">Mic On</button>
+            <button class="btn danger" id="leaveBtn" type="button">Leave</button>
+        </div>
+    </header>
+
+    <main class="meeting">
+        <section class="panel video-panel" aria-labelledby="meetingTitle">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow">Live room</p>
+                    <h2 id="meetingTitle">Meeting</h2>
+                </div>
+                <span class="muted compact-note">FER updates every few seconds for instructors.</span>
+            </div>
+            <div class="panel-body">
+                <div class="grid" id="videoGrid">
+                    <div class="empty-state">
+                        <div class="loader"></div>
+                        <strong>Waiting for camera stream</strong>
+                        <span>Connection status will update shortly.</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <aside class="side-stack" aria-label="People and analytics">
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Participants</p>
+                        <h2>People</h2>
+                    </div>
+                    <span class="badge soft" id="countLabel">0 participants</span>
+                </div>
+                <div class="panel-body">
+                    <div class="list" id="peopleList"></div>
+                </div>
+            </section>
+
+            <section class="panel chat-panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Messages</p>
+                        <h2>Chat</h2>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="chatbox">
+                        <div class="chatlog" id="chatlog"></div>
+                        <div class="chatinput">
+                            <input id="chatMsg" placeholder="Type a message..." />
+                            <button class="btn" id="sendChatBtn" type="button">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel analytics-panel" id="analyticsWrap" style="display:none;">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Instructor</p>
+                        <h2>Live Analytics</h2>
+                    </div>
+                    <span class="status-pill live"><span class="pulse-dot"></span> Active</span>
+                </div>
+                <div class="panel-body">
+                    <p class="muted analytics-intro">
+                        Concentration is estimated from emotion, head direction, and phone detection signals.
+                    </p>
+
+                    <div class="kpi">
+                        <div class="box accent-box">
+                            <h3>Concentration</h3>
+                            <p id="kpiEng">-</p>
+                        </div>
+                        <div class="box">
+                            <h3>Top Emotion</h3>
+                            <p id="kpiTop">-</p>
+                        </div>
+                        <div class="box alert-box">
+                            <h3>Phone Alerts</h3>
+                            <p id="kpiPhone">-</p>
+                        </div>
+                    </div>
+
+                    <div class="kpi secondary-kpi">
+                        <div class="box">
+                            <h3>Looking Forward</h3>
+                            <p id="kpiForward">-</p>
+                        </div>
+                        <div class="box">
+                            <h3>Distracted</h3>
+                            <p id="kpiDistracted">-</p>
+                        </div>
+                        <div class="box">
+                            <h3>Trend 30s</h3>
+                            <p id="kpiRate">-</p>
+                        </div>
+                    </div>
+
+                    <div class="analytics-block">
+                        <b>Distribution</b>
+                        <div class="muted distribution" id="distText"></div>
+                    </div>
+
+                    <div class="analytics-block">
+                        <b>Alerts</b>
+                        <div class="muted alert-list" id="alertList">No alerts yet.</div>
+                    </div>
+
+                    <div class="analytics-block">
+                        <b>Session Summary</b>
+                        <div class="muted distribution" id="sessionSummaryText">
+                            Summary will appear when the session ends.
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="studentNote" class="panel student-note">
+                <div class="panel-body">
+                    <strong>Student view</strong>
+                    <p class="muted">Instructor analytics are hidden for students.</p>
+                </div>
+            </section>
+        </aside>
+    </main>
+
+    <div class="questionnaire-overlay hidden" id="questionnaireOverlay">
+        <div class="questionnaire-card modern-card">
+            <div class="questionnaire-header">
+                <div>
+                    <div class="questionnaire-chip" id="questionnaireChip">Session Feedback</div>
+                    <h2 id="questionnaireTitle">Before you leave</h2>
+                    <p class="muted" id="questionnaireSubtitle">
+                        Please answer these short questions. It will only take a minute.
+                    </p>
+                </div>
+
+                <button class="icon-close" id="closeQuestionnaireBtn" type="button" aria-label="Close questionnaire">
+                    x
+                </button>
+            </div>
+
+            <form id="questionnaireForm" class="questionnaire-form">
+                <div class="questionnaire-progress" aria-live="polite">
+                    <div>
+                        <strong id="questionnaireProgressText">0 of 7 answered</strong>
+                        <span class="muted" id="questionnaireMoodText">Choose a rating to begin.</span>
+                    </div>
+                    <div class="questionnaire-progress-track" aria-hidden="true">
+                        <span id="questionnaireProgressBar"></span>
+                    </div>
+                </div>
+
+                <div class="questionnaire-scale">
+                    <span>1 Very poor</span>
+                    <span>2 Poor</span>
+                    <span>3 Fair</span>
+                    <span>4 Good</span>
+                    <span>5 Excellent</span>
+                </div>
+                <div id="questionnaireQuestions" class="questionnaire-questions"></div>
+
+                <div class="questionnaire-actions">
+                    <button class="btn secondary" type="button" id="submitAndStayBtn">Submit and Stay</button>
+                    <button class="btn danger" type="submit" id="submitAndLeaveBtn">Submit and Leave</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="feedback-overlay hidden" id="feedbackOverlay">
+        <div class="feedback-card">
+            <div class="feedback-header">
+                <div>
+                    <div class="questionnaire-chip">AI Session Feedback</div>
+                    <h2 id="feedbackTitle">Your AI Feedback</h2>
+                    <p class="muted" id="feedbackSubtitle">
+                        Feedback generated from emotion, head direction, and phone detection signals.
+                    </p>
+                </div>
+            </div>
+
+            <div id="feedbackContent" class="feedback-content">
+                Generating feedback...
+            </div>
+
+            <div class="questionnaire-actions">
+                <button class="btn" id="finishFeedbackBtn" type="button">Finish</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+    <div class="audio-sink" id="audioSink" aria-hidden="true"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/livekit-client/2.15.7/livekit-client.umd.js"></script>
+    <script src="analysis.js"></script>
+    <script src="meeting.js"></script>
+</body>
+
+</html>
