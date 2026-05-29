@@ -39,6 +39,18 @@ app.use(
 );
 
 app.use(
+    "/api/collect",
+    createProxyMiddleware({
+        target: "http://127.0.0.1:7001",
+        changeOrigin: true,
+        pathRewrite: () => "/collect",
+        on: {
+            proxyReq: fixRequestBody,
+        },
+    })
+);
+
+app.use(
     "/api/session_feedback",
     createProxyMiddleware({
         target: "http://127.0.0.1:7001",

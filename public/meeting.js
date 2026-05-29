@@ -282,15 +282,17 @@ if (questionnaireForm) {
 async function sendSessionAnalysisToLLM(sessionDataOverride = null) {
     if (!window.Analysis) return null;
 
+    const fullSessionData = sessionDataOverride || window.Analysis.getFullSessionData();
     const sessionData = {
-        ...(sessionDataOverride || window.Analysis.getFullSessionData()),
+        room: roomName,
         requester: {
             name: displayName,
             role: role
-        }
+        },
+        structuredFeedbackData: buildStructuredFeedbackPayload(fullSessionData)
     };
 
-    console.log("Sending session data to LLM:", sessionData);
+    console.log("Sending structured session data to LLM:", sessionData);
 
     const res = await fetch("/api/session_feedback", {
         method: "POST",
@@ -348,6 +350,179 @@ function getAverageScore(sessionData, students) {
     return Math.round(students.reduce((sum, student) => sum + student.score, 0) / students.length);
 }
 
+function getStoredQuestionnaire() {
+    try {
+        const saved = JSON.parse(localStorage.getItem("fer-meet-last-questionnaire") || "null");
+        if (!saved || saved.room !== roomName || saved.name !== displayName || saved.role !== role) {
+            return null;
+        }
+        return saved;
+    } catch {
+        return null;
+    }
+}
+
+function getEmotionPercentages(emotionCounts = {}) {
+    const total = Object.values(emotionCounts).reduce((sum, value) => sum + Number(value || 0), 0);
+    if (!total) return {};
+
+    return Object.fromEntries(
+        Object.entries(emotionCounts).map(([emotion, count]) => [
+            emotion,
+            Math.round((Number(count || 0) / total) * 100)
+        ])
+    );
+}
+
+function getStudentStructuredSummary(student) {
+    const emotionPercentages = getEmotionPercentages(student.emotionCounts || {});
+    const records = Array.isArray(student.sessionRecords) ? student.sessionRecords : [];
+    const events = Array.isArray(student.events) ? student.events : [];
+    const phonePercent = records.length
+        ? Math.round((records.filter((item) => item.phoneDetected).length / records.length) * 100)
+        : (student.phoneDetected ? 100 : 0);
+    const positiveEmotionPercent =
+        (emotionPercentages.happy || 0) +
+        (emotionPercentages.neutral || 0) +
+        Math.round((emotionPercentages.surprise || 0) * 0.5);
+    const stressConfusionPercent =
+        (emotionPercentages.angry || 0) +
+        (emotionPercentages.anger || 0) +
+        (emotionPercentages.fear || 0) +
+        Math.round((emotionPercentages.disgust || 0) * 0.7) +
+        Math.round((emotionPercentages.sad || 0) * 0.4);
+    const forwardPercent = records.length
+        ? Math.round((records.filter((item) => item.headDirection === "Looking Forward").length / records.length) * 100)
+        : 0;
+    const noFaceEvents = events.filter((event) => event.type === "no_face").length;
+    const participationLevel = Math.max(0, Math.min(100, Math.round(
+        ((records.length ? 70 : 35) + (forwardPercent * 0.2) + (phonePercent ? -15 : 10) - (noFaceEvents * 4))
+    )));
+
+    return {
+        id: student.id,
+        name: student.name,
+        active: !!student.active,
+        joinedAt: student.joinedAt,
+        leftAt: student.leftAt,
+        engagementScore: Math.max(0, Math.min(100, Math.round(Number(student.engagementScore) || 0))),
+        concentrationLevel: Math.max(0, Math.min(100, Math.round(Number(student.engagementScore) || 0))),
+        attentionLevel: Math.max(0, Math.min(100, forwardPercent || Number(student.engagementScore) || 0)),
+        participationLevel,
+        confusionLevel: Math.max(0, Math.min(100, stressConfusionPercent)),
+        finalStatus: student.finalStatus || student.currentStatus || "Unknown",
+        dominantEmotion: student.dominantEmotion || student.currentEmotion || "unknown",
+        emotionPercentages,
+        emotionBalance: Math.max(0, Math.min(100, positiveEmotionPercent)),
+        headDirection: student.headDirection || "Unknown",
+        lookingAwayCount: Number(student.lookingAwayCount) || 0,
+        phoneDetected: !!student.phoneDetected,
+        phonePercent,
+        sampleCount: records.length,
+        events: events.map((event) => ({
+            type: event.type,
+            severity: event.severity,
+            message: event.message,
+            timestamp: event.timestamp,
+            displayTime: event.displayTime
+        })).slice(-20),
+        questionnaire: null
+    };
+}
+
+function getOwnStudentSummary(students) {
+    const ownName = displayName.toLowerCase();
+    return students.find((student) =>
+        String(student.name || "").replace(" (You)", "").toLowerCase() === ownName
+    ) || students[0] || null;
+}
+
+function buildStructuredFeedbackPayload(sessionData) {
+    const students = (Array.isArray(sessionData?.students) ? sessionData.students : [])
+        .map(getStudentStructuredSummary);
+    const averageEngagement = students.length
+        ? Math.round(students.reduce((sum, student) => sum + student.engagementScore, 0) / students.length)
+        : 0;
+    const lookingForwardPercent = students.length
+        ? Math.round((students.filter((student) => student.headDirection === "Looking Forward").length / students.length) * 100)
+        : 0;
+    const phonePercent = students.length
+        ? Math.round((students.filter((student) => student.phoneDetected).length / students.length) * 100)
+        : 0;
+    const eventList = Array.isArray(sessionData?.events)
+        ? sessionData.events.map((event) => ({
+            type: event.type,
+            severity: event.severity,
+            message: event.message,
+            studentName: event.studentName,
+            timestamp: event.timestamp,
+            displayTime: event.displayTime
+        })).slice(-60)
+        : [];
+    const needSupport = students.filter((student) =>
+        student.engagementScore < 45 ||
+        student.confusionLevel > 30 ||
+        student.phoneDetected ||
+        student.events?.some((event) => event.severity === "high")
+    );
+    const classEmotionCounts = {};
+
+    students.forEach((student) => {
+        Object.entries(student.emotionPercentages || {}).forEach(([emotion, percent]) => {
+            classEmotionCounts[emotion] = (classEmotionCounts[emotion] || 0) + percent;
+        });
+    });
+
+    const classEmotionPercentages = Object.fromEntries(
+        Object.entries(classEmotionCounts).map(([emotion, total]) => [
+            emotion,
+            students.length ? Math.round(total / students.length) : 0
+        ])
+    );
+
+    const base = {
+        room: roomName,
+        generatedAt: new Date().toISOString(),
+        requester: { name: displayName, role },
+        questionnaire: getStoredQuestionnaire(),
+        sessionSummary: {
+            totalStudents: students.length,
+            activeStudents: students.filter((student) => student.active).length,
+            attendedAndLeft: students.filter((student) => !student.active && student.leftAt).length,
+            averageEngagement,
+            lookingForwardPercent,
+            phonePercent,
+            mostCommonEmotion: sessionData?.summary?.mostCommonEmotion || "-",
+            classEmotionPercentages,
+            eventCount: eventList.length,
+            majorityNeedsAttention: students.length
+                ? needSupport.length >= Math.ceil(students.length / 2)
+                : false
+        },
+        events: eventList,
+        studentsNeedingSupport: needSupport.map((student) => ({
+            name: student.name,
+            engagementScore: student.engagementScore,
+            confusionLevel: student.confusionLevel,
+            keyEvents: (student.events || []).slice(-5)
+        }))
+    };
+
+    if (role === "instructor") {
+        return {
+            ...base,
+            feedbackType: "instructor",
+            students
+        };
+    }
+
+    return {
+        ...base,
+        feedbackType: "student",
+        student: getOwnStudentSummary(students)
+    };
+}
+
 function renderLevelBar({ label, score, level, caption = "" }) {
     return `
         <div class="ai-bar-row">
@@ -363,20 +538,10 @@ function renderLevelBar({ label, score, level, caption = "" }) {
     `;
 }
 
-function renderInstructorFeedback(feedback, sessionData) {
+function renderInstructorFeedback(feedback, sessionData, visualFeedback = null) {
     const students = getFeedbackStudents(sessionData);
     const averageScore = getAverageScore(sessionData, students);
     const level = getLevel(averageScore);
-    const notes = cleanFeedbackLines(feedback);
-    const studentBars = students.slice(0, 6).map((student) =>
-        renderLevelBar({
-            label: student.name || "Student",
-            score: student.score,
-            level: getLevel(student.score),
-            caption: student.finalStatus || student.currentStatus || ""
-        })
-    ).join("");
-
     return `
         <div class="ai-feedback-ui instructor-feedback">
             <div class="ai-feedback-hero ${level.className}">
@@ -391,39 +556,50 @@ function renderInstructorFeedback(feedback, sessionData) {
                 label: "Class level",
                 score: averageScore,
                 level,
-                caption: "Overall attention estimate"
+                caption: "Overall class engagement estimate"
             })}
 
-            <div class="ai-level-key">
-                <span class="low">Low</span>
-                <span class="medium">Moderate</span>
-                <span class="high">High</span>
-            </div>
+            ${renderFeedbackBars(visualFeedback, "Instructor feedback", {
+                role: "instructor",
+                sessionData,
+                students,
+                idPrefix: "instructorFeedback"
+            })}
 
             <div class="ai-feedback-grid">
                 <section>
-                    <h3>Student Levels</h3>
-                    ${studentBars || `<p class="muted">No student samples available.</p>`}
+                    <h3>Students Who May Need Support</h3>
+                    ${renderSupportList(students)}
                 </section>
                 <section>
-                    <h3>Teaching Notes</h3>
-                    ${renderFeedbackNotes(notes, "No teaching notes available.")}
+                    <h3>Class Signals</h3>
+                    <div class="ai-signal-list">
+                        <div><span>Students</span><strong>${students.length}</strong></div>
+                        <div><span>Left Session</span><strong>${students.filter((student) => !student.active && student.leftAt).length}</strong></div>
+                        <div><span>Top Emotion</span><strong>${escapeHtml(sessionData?.summary?.mostCommonEmotion || "-")}</strong></div>
+                        <div><span>Lowest Moment</span><strong>${escapeHtml(sessionData?.summary?.lowestMomentText || "No data")}</strong></div>
+                    </div>
                 </section>
             </div>
+
+            <section class="ai-feedback-notes">
+                <h3>Important Events</h3>
+                ${renderEventList(sessionData?.events, "No distraction or support events recorded.")}
+            </section>
         </div>
     `;
 }
 
-function renderStudentFeedback(feedback, sessionData) {
+function renderStudentFeedback(feedback, sessionData, visualFeedback = null) {
     const students = getFeedbackStudents(sessionData);
     const ownRecord = students.find((student) =>
         String(student.name || "").replace(" (You)", "").toLowerCase() === displayName.toLowerCase()
     );
     const score = ownRecord ? ownRecord.score : getAverageScore(sessionData, students);
     const level = getLevel(score);
-    const notes = cleanFeedbackLines(feedback);
     const headText = ownRecord?.headDirection || "Not recorded";
     const deviceText = ownRecord?.phoneDetected ? "Phone detected" : "Clear";
+    const ownEvents = ownRecord?.events || [];
 
     return `
         <div class="ai-feedback-ui student-feedback">
@@ -442,6 +618,14 @@ function renderStudentFeedback(feedback, sessionData) {
                 caption: ownRecord?.finalStatus || ownRecord?.currentStatus || "Session estimate"
             })}
 
+            ${renderFeedbackBars(visualFeedback, "Your feedback", {
+                role: "student",
+                sessionData,
+                students,
+                ownRecord,
+                idPrefix: "studentFeedback"
+            })}
+
             <div class="ai-student-metrics">
                 <div>
                     <span>Head Position</span>
@@ -454,8 +638,8 @@ function renderStudentFeedback(feedback, sessionData) {
             </div>
 
             <section class="ai-feedback-notes">
-                <h3>Learning Notes</h3>
-                ${renderFeedbackNotes(notes, "No learning notes available.")}
+                <h3>Your Session Details</h3>
+                ${renderEventList(ownEvents, "No major distraction events recorded.")}
             </section>
         </div>
     `;
@@ -473,12 +657,12 @@ function renderFeedbackNotes(notes, emptyText) {
     `;
 }
 
-function renderAIFeedback(feedback, sessionData) {
+function renderAIFeedback(feedback, sessionData, visualFeedback = null) {
     if (role === "instructor") {
-        return renderInstructorFeedback(feedback, sessionData);
+        return renderInstructorFeedback(feedback, sessionData, visualFeedback);
     }
 
-    return renderStudentFeedback(feedback, sessionData);
+    return renderStudentFeedback(feedback, sessionData, visualFeedback);
 }
 
 
@@ -497,7 +681,7 @@ async function leaveMeetingNow() {
         feedbackContent.innerHTML = `
             <div class="feedback-loading">
                 <div class="loader"></div>
-                <h3>Generating AI feedback...</h3>
+                <h3>Generating session feedback...</h3>
                 <p class="muted">Please wait while the session analysis is processed.</p>
             </div>
         `;
@@ -514,15 +698,17 @@ async function leaveMeetingNow() {
         const result = await sendSessionAnalysisToLLM(sessionData);
 
         const feedback = result?.feedback || result?.rawFeedback || "No feedback returned.";
+        const visualFeedback = result?.visualFeedback || null;
+        const renderedSessionData = result?.structuredFeedbackData || sessionData;
         const feedbackTitle = document.getElementById("feedbackTitle");
         if (feedbackTitle) {
             feedbackTitle.textContent = role === "instructor"
-                ? "Instructor AI Feedback"
-                : "Student AI Feedback";
+                ? "Instructor Session Feedback"
+                : "Student Session Feedback";
         }
 
         if (feedbackContent) {
-            feedbackContent.innerHTML = renderAIFeedback(feedback, sessionData);
+            feedbackContent.innerHTML = renderAIFeedback(feedback, renderedSessionData, visualFeedback);
         }
 
         setStatus("Meeting ended", "connected");
@@ -549,11 +735,39 @@ const FER_API_URL = "/api/predict";
 const POSE_PHONE_API_URL = "/api/pose_phone";
 const FER_INTERVAL_MS = 2000;
 const FER_INSTRUCTOR_ONLY = true;
+const ANALYSIS_FRAME_WIDTH = 640;
+const HEAD_LEFT_THRESHOLD = -7;
+const HEAD_RIGHT_THRESHOLD = 7;
+const HEAD_BASELINE_SAMPLES = 3;
 
 const ferCanvas = document.createElement("canvas");
 const ferCtx = ferCanvas.getContext("2d", { willReadFrequently: true });
 
 const ferTimers = new Map();
+const poseStateByTile = new Map();
+
+function getCameraCaptureOptions() {
+    const presetResolution = LivekitClient.VideoPresets?.h720?.resolution;
+
+    return {
+        resolution: presetResolution || {
+            width: 1280,
+            height: 720,
+            frameRate: 30
+        },
+        facingMode: "user"
+    };
+}
+
+async function enableLocalMedia() {
+    try {
+        await lkRoom.localParticipant.setCameraEnabled(true, getCameraCaptureOptions());
+        await lkRoom.localParticipant.setMicrophoneEnabled(true);
+    } catch (e) {
+        console.warn("Preferred camera quality failed, using browser defaults:", e);
+        await lkRoom.localParticipant.enableCameraAndMicrophone();
+    }
+}
 
 // ===================== UI HELPERS =====================
 function ensureEmotionBadge(tileEl) {
@@ -614,7 +828,7 @@ function updateEmotionBadge(badge, details) {
                 <strong>${escapeHtml(finalStatus)}</strong>
             </div>
             <div>
-                <span>Attention Level</span>
+                <span>Emotion Status</span>
                 <strong>${escapeHtml(label)}</strong>
             </div>
             <div>
@@ -627,6 +841,265 @@ function updateEmotionBadge(badge, details) {
             </div>
         </div>
     `;
+}
+
+function getToneLevel(score, tone) {
+    if (tone === "high" || tone === "medium" || tone === "low") return { className: tone };
+    return getLevel(score);
+}
+
+function getTopEmotionText(emotionCounts = {}) {
+    const entries = Object.entries(emotionCounts)
+        .map(([emotion, count]) => [emotion, Number(count) || 0])
+        .filter(([, count]) => count > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3);
+
+    if (!entries.length) return "No emotion samples were recorded.";
+
+    const total = entries.reduce((sum, [, count]) => sum + count, 0);
+    return entries
+        .map(([emotion, count]) => `${emotion}: ${Math.round((count / total) * 100)}%`)
+        .join(", ");
+}
+
+function getQuestionnaireDetail(context = {}) {
+    const backendSummary = context.sessionData?.questionnaires;
+    if (backendSummary?.averageRating !== undefined && backendSummary?.averageRating !== null) {
+        return `Questionnaire average: ${backendSummary.averageRating}/5. This contributes 30% of the feedback score.`;
+    }
+
+    const questionnaire = getStoredQuestionnaire();
+    if (!questionnaire) return "No questionnaire answers were submitted for this user.";
+
+    const lowest = (questionnaire.ratings || [])
+        .filter((item) => Number.isFinite(Number(item.rating)))
+        .sort((a, b) => Number(a.rating) - Number(b.rating))[0];
+    const lowText = lowest
+        ? `Lowest answer: Q${lowest.questionNumber} scored ${lowest.rating}/5.`
+        : "No rated questionnaire items were found.";
+
+    return `Questionnaire average: ${questionnaire.averageRating}/5. ${lowText} This contributes 30% of the feedback score.`;
+}
+
+function getEventDetail(events = [], emptyText = "No important events were recorded.") {
+    const list = Array.isArray(events) ? events.slice(-4).reverse() : [];
+    if (!list.length) return emptyText;
+
+    return list
+        .map((event) => `${event.displayTime || formatSessionTime(event.timestamp)} - ${event.message || "Session event"}`)
+        .join(" | ");
+}
+
+function buildFeedbackDetailLines(bar, context = {}) {
+    const label = String(bar?.label || "").toLowerCase();
+    const score = Math.max(0, Math.min(100, Math.round(Number(bar?.score) || 0)));
+    const lines = [];
+
+    if (bar?.detail) {
+        lines.push(`Main reason: ${bar.detail}`);
+    }
+
+    lines.push(`Score meaning: ${score}% uses 70% live session analytics and 30% questionnaire answers.`);
+
+    if (context.role === "student") {
+        const student = context.ownRecord;
+        if (!student) {
+            lines.push("No personal student record was found for this session.");
+            return lines;
+        }
+
+        if (label.includes("engagement") || label.includes("overall")) {
+            lines.push(`Engagement evidence: ${student.score}% final engagement, ${student.sessionRecords?.length || student.sampleCount || 0} analysis samples, status ${student.finalStatus || student.currentStatus || "unknown"}.`);
+        }
+        if (label.includes("concentration") || label.includes("attention")) {
+            lines.push(`Head-pose evidence: latest position was ${student.headDirection || "unknown"} with ${student.lookingAwayCount || 0} looking-away counts.`);
+        }
+        if (label.includes("understanding")) {
+            lines.push(getQuestionnaireDetail(context));
+        }
+        if (label.includes("stress") || label.includes("confusion")) {
+            lines.push(`Emotion evidence: ${getTopEmotionText(student.emotionCounts || {})}.`);
+        }
+        if (label.includes("participation")) {
+            lines.push(`Presence evidence: joined at ${formatSessionTime(student.joinedAt)}${student.leftAt ? ` and left at ${formatSessionTime(student.leftAt)}` : " and stayed until feedback was generated"}.`);
+        }
+
+        lines.push(`Important events: ${getEventDetail(student.events, "No distraction, phone, or camera-away events were recorded for you.")}`);
+        return lines;
+    }
+
+    const students = Array.isArray(context.students) ? context.students : [];
+    const events = Array.isArray(context.sessionData?.events) ? context.sessionData.events : [];
+    const supportStudents = students.filter((student) =>
+        student.score < 50 ||
+        student.phoneDetected ||
+        student.finalStatus === "Not Concentrating" ||
+        student.finalStatus === "Possibly Not Concentrating"
+    );
+
+    lines.push(`Class evidence: ${students.length} students attended, ${students.filter((student) => student.active).length} currently active, ${students.filter((student) => !student.active && student.leftAt).length} left after joining.`);
+
+    if (label.includes("engagement") || label.includes("concentration") || label.includes("overall")) {
+        const average = students.length
+            ? Math.round(students.reduce((sum, student) => sum + student.score, 0) / students.length)
+            : 0;
+        lines.push(`Class average: ${average}% engagement across all students who joined the session.`);
+    }
+    if (label.includes("stress") || label.includes("confusion") || label.includes("support")) {
+        lines.push(`Students needing support: ${supportStudents.length ? supportStudents.map((student) => student.name || "Student").join(", ") : "none flagged"}.`);
+    }
+    if (label.includes("emotion") || label.includes("understanding")) {
+        lines.push(`Class emotion trend: ${context.sessionData?.summary?.mostCommonEmotion || "not enough data"} was the most common emotion.`);
+    }
+    if (label.includes("teaching") || label.includes("clarity") || label.includes("overall") || label.includes("engagement")) {
+        lines.push(getQuestionnaireDetail(context));
+    }
+
+    lines.push(`Important events: ${getEventDetail(events, "No distraction or support events were recorded for the class.")}`);
+    return lines;
+}
+
+function renderFeedbackBars(visualFeedback, fallbackTitle, context = {}) {
+    const bars = Array.isArray(visualFeedback?.bars) ? visualFeedback.bars : [];
+    if (!bars.length) {
+        return `<p class="muted">No visual feedback available.</p>`;
+    }
+
+    return `
+        <div class="visual-feedback">
+            <div class="visual-feedback-title">
+                <h3>${escapeHtml(visualFeedback?.headline || fallbackTitle)}</h3>
+            </div>
+            ${bars.map((bar, index) => {
+                const score = Math.max(0, Math.min(100, Math.round(Number(bar.score) || 0)));
+                const tone = getToneLevel(score, bar.tone);
+                const detailId = `${context.idPrefix || "feedbackDetail"}${index}`;
+                const detailLines = buildFeedbackDetailLines(bar, context);
+                return `
+                    <div class="feedback-bar-card">
+                        <div class="feedback-bar-head">
+                            <div>
+                                <span>${escapeHtml(bar.label || "Score")}</span>
+                                <strong>${score}%</strong>
+                            </div>
+                            <button class="detail-toggle" type="button" data-detail-target="${escapeHtml(detailId)}">
+                                View Details
+                            </button>
+                        </div>
+                        <div class="ai-bar-track ${tone.className}">
+                            <span style="width: ${score}%"></span>
+                        </div>
+                        <div class="feedback-detail hidden" id="${escapeHtml(detailId)}">
+                            <ul>
+                                ${detailLines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
+                            </ul>
+                        </div>
+                    </div>
+                `;
+            }).join("")}
+        </div>
+    `;
+}
+
+function formatSessionTime(value) {
+    if (!value) return "-";
+    try {
+        return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    } catch {
+        return "-";
+    }
+}
+
+function renderEventList(events = [], emptyText = "No key events recorded.") {
+    const list = Array.isArray(events) ? events.slice(-8).reverse() : [];
+    if (!list.length) {
+        return `<p class="muted">${escapeHtml(emptyText)}</p>`;
+    }
+
+    return `
+        <div class="event-list">
+            ${list.map((event) => `
+                <div class="event-item ${escapeHtml(event.severity || "medium")}">
+                    <span>${escapeHtml(event.displayTime || formatSessionTime(event.timestamp))}</span>
+                    <strong>${escapeHtml(event.message || "Session event")}</strong>
+                </div>
+            `).join("")}
+        </div>
+    `;
+}
+
+function renderSupportList(students = []) {
+    const list = students.filter((student) =>
+        student.score < 50 ||
+        student.phoneDetected ||
+        student.finalStatus === "Not Concentrating" ||
+        student.finalStatus === "Possibly Not Concentrating"
+    ).slice(0, 6);
+
+    if (!list.length) {
+        return `<p class="muted">No student support flags recorded.</p>`;
+    }
+
+    return `
+        <div class="support-list">
+            ${list.map((student) => `
+                <div>
+                    <span>${escapeHtml(student.name || "Student")}</span>
+                    <strong>${student.score}%</strong>
+                    <small>${escapeHtml(student.finalStatus || student.currentStatus || "Needs review")}</small>
+                </div>
+            `).join("")}
+        </div>
+    `;
+}
+
+function getSmoothedHeadPose(tileId, headPose) {
+    const rawYaw = Number(headPose?.yaw);
+
+    if (!Number.isFinite(rawYaw)) {
+        poseStateByTile.delete(tileId);
+        return {
+            yaw: null,
+            direction: headPose?.direction || "No Face"
+        };
+    }
+
+    const previous = poseStateByTile.get(tileId) || {
+        baselineSamples: [],
+        baseline: null,
+        yaw: rawYaw
+    };
+
+    let baseline = previous.baseline;
+    const baselineSamples = previous.baselineSamples || [];
+
+    if (baseline === null && baselineSamples.length < HEAD_BASELINE_SAMPLES) {
+        baselineSamples.push(rawYaw);
+        if (baselineSamples.length === HEAD_BASELINE_SAMPLES) {
+            baseline = baselineSamples.reduce((sum, value) => sum + value, 0) / baselineSamples.length;
+        }
+    }
+
+    const correctedYaw = baseline === null ? 0 : rawYaw - baseline;
+    const yaw = previous.yaw === null || previous.yaw === undefined
+        ? correctedYaw
+        : (previous.yaw * 0.2) + (correctedYaw * 0.8);
+
+    let direction = "Looking Forward";
+    if (baseline !== null && yaw < HEAD_LEFT_THRESHOLD) direction = "Looking Left";
+    if (baseline !== null && yaw > HEAD_RIGHT_THRESHOLD) direction = "Looking Right";
+
+    poseStateByTile.set(tileId, {
+        baselineSamples,
+        baseline,
+        yaw
+    });
+
+    return {
+        yaw,
+        direction
+    };
 }
 
 function escapeHtml(s) {
@@ -890,6 +1363,42 @@ async function postFrameToPosePhone(blob) {
     return await res.json();
 }
 
+function postStudentSignal(tileId, {
+    label,
+    engagementState,
+    headDirection,
+    yaw,
+    phoneDetected,
+    finalStatus
+}) {
+    if (!roomName) return;
+
+    const tileName =
+        document.getElementById(`tile-${tileId}`)?.querySelector(".name")?.textContent?.replace(" (You)", "") ||
+        tileId;
+
+    fetch("/api/collect", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            room: roomName,
+            studentId: tileId,
+            studentName: tileName,
+            emotion: label,
+            emotionStatus: engagementState,
+            headDirection,
+            yaw,
+            phoneDetected,
+            finalStatus,
+            timestamp: new Date().toISOString()
+        })
+    }).catch((e) => {
+        console.warn("Feedback signal collect failed:", e);
+    });
+}
+
 function captureVideoFrameAsBlob(videoEl) {
     if (!videoEl || videoEl.readyState < 2) return null;
 
@@ -897,7 +1406,7 @@ function captureVideoFrameAsBlob(videoEl) {
     const h = videoEl.videoHeight;
     if (!w || !h) return null;
 
-    const targetW = 224;
+    const targetW = Math.min(ANALYSIS_FRAME_WIDTH, w);
     const targetH = Math.round((h / w) * targetW);
 
     ferCanvas.width = targetW;
@@ -906,7 +1415,7 @@ function captureVideoFrameAsBlob(videoEl) {
     ferCtx.drawImage(videoEl, 0, 0, targetW, targetH);
 
     return new Promise((resolve) => {
-        ferCanvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.8);
+        ferCanvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.9);
     });
 }
 
@@ -936,8 +1445,9 @@ function startEmotionLoopForTile(tileId, videoEl) {
                 : "Unknown";
 
             const headPose = posePhoneData?.head_pose || {};
-            const headDirection = headPose?.direction || "Unknown";
-            const yaw = headPose?.yaw;
+            const smoothedHeadPose = getSmoothedHeadPose(tileId, headPose);
+            const headDirection = smoothedHeadPose.direction || "Unknown";
+            const yaw = smoothedHeadPose.yaw;
             const yawText = yaw === null || yaw === undefined ? "-" : `${Number(yaw).toFixed(1)} deg`;
 
             const phoneDetected = posePhoneData?.phone?.detected || false;
@@ -972,6 +1482,15 @@ function startEmotionLoopForTile(tileId, videoEl) {
                 finalStatus
             });
 
+            postStudentSignal(tileId, {
+                label,
+                engagementState,
+                headDirection,
+                yaw,
+                phoneDetected,
+                finalStatus
+            });
+
             renderPeople(lkRoom?.participants);
         } catch (e) {
             badge.className = "emotionBadge error";
@@ -987,6 +1506,7 @@ function stopEmotionLoopForTile(tileId) {
     const id = ferTimers.get(tileId);
     if (id) clearInterval(id);
     ferTimers.delete(tileId);
+    poseStateByTile.delete(tileId);
 }
 
 async function fetchToken() {
@@ -1032,6 +1552,7 @@ async function connectLiveKit() {
     lkRoom = new LivekitClient.Room({
         adaptiveStream: true,
         dynacast: true,
+        videoCaptureDefaults: getCameraCaptureOptions(),
     });
 
     lkRoom.on(LivekitClient.RoomEvent.ParticipantConnected, () => {
@@ -1076,7 +1597,7 @@ async function connectLiveKit() {
 
     renderPeople(lkRoom.participants);
 
-    await lkRoom.localParticipant.enableCameraAndMicrophone();
+    await enableLocalMedia();
 
     const pubs = Array.from(lkRoom.localParticipant.videoTrackPublications.values());
     const localVideoPub = pubs.find((p) => p.track);
@@ -1096,7 +1617,7 @@ async function connectLiveKit() {
 
 document.getElementById("toggleCamBtn").addEventListener("click", async () => {
     camEnabled = !camEnabled;
-    await lkRoom?.localParticipant.setCameraEnabled(camEnabled);
+    await lkRoom?.localParticipant.setCameraEnabled(camEnabled, getCameraCaptureOptions());
     document.getElementById("toggleCamBtn").textContent = `Camera ${camEnabled ? "On" : "Off"}`;
     showToast(`Camera turned ${camEnabled ? "on" : "off"}.`);
 });
@@ -1159,6 +1680,18 @@ if (finishFeedbackBtn) {
         window.location.href = "/";
     });
 }
+
+document.addEventListener("click", (event) => {
+    const button = event.target.closest(".detail-toggle");
+    if (!button) return;
+
+    const targetId = button.dataset.detailTarget;
+    const target = targetId ? document.getElementById(targetId) : null;
+    if (!target) return;
+
+    const isHidden = target.classList.toggle("hidden");
+    button.textContent = isHidden ? "View Details" : "Hide Details";
+});
 
 
 

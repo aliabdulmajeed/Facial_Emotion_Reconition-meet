@@ -21,4 +21,4 @@ cloudflared.*.log
 Thumbs.db
 
 debug_received.jpg
-
+.ultralytics/

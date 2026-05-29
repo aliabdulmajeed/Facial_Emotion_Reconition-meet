@@ -1,19 +1,31 @@
+import os
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 from PIL import Image
 import io
 import cv2
-import mediapipe as mp
+import torch
+import torch.nn as nn
+from torchvision import models, transforms
+
+YOLO_CONFIG_DIR = os.path.join(os.path.dirname(__file__), ".ultralytics")
+os.makedirs(YOLO_CONFIG_DIR, exist_ok=True)
+os.environ.setdefault("YOLO_CONFIG_DIR", YOLO_CONFIG_DIR)
+
 from ultralytics import YOLO
 
 # =========================
 # Settings
 # =========================
 
-LEFT_THRESHOLD = -22
-RIGHT_THRESHOLD = 22
+LEFT_THRESHOLD = -5
+RIGHT_THRESHOLD = 5
+YAW_GAIN = 2.2
 PHONE_CONF_THRESHOLD = 0.35
+IMG_SIZE = 224
+YAW_MODEL_PATH = os.path.join(os.path.dirname(__file__), "best_yaw_model.pth")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 app = FastAPI()
 
@@ -32,29 +44,39 @@ app.add_middleware(
 phone_model = YOLO("yolov8n.pt")
 print("YOLO phone model loaded successfully!")
 
-mp_face_mesh = mp.solutions.face_mesh
-
-face_mesh = mp_face_mesh.FaceMesh(
-    static_image_mode=True,
-    max_num_faces=1,
-    refine_landmarks=True,
-    min_detection_confidence=0.5
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
-# =========================
-# Head pose points
-# =========================
+class YawRegressionModel(nn.Module):
+    def __init__(self):
+        super().__init__()
 
-face_3d = np.array([
-    [0.0, 0.0, 0.0],          # Nose tip
-    [0.0, -330.0, -65.0],     # Chin
-    [-225.0, 170.0, -135.0],  # Left eye corner
-    [225.0, 170.0, -135.0],   # Right eye corner
-    [-150.0, -150.0, -125.0], # Left mouth corner
-    [150.0, -150.0, -125.0]   # Right mouth corner
-], dtype=np.float64)
+        self.backbone = models.efficientnet_b0(weights=None)
+        in_features = self.backbone.classifier[1].in_features
+        self.backbone.classifier = nn.Sequential(
+            nn.Dropout(0.4),
+            nn.Linear(in_features, 1)
+        )
 
-landmark_ids = [1, 152, 33, 263, 61, 291]
+    def forward(self, x):
+        return self.backbone(x)
+
+
+yaw_transform = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+
+yaw_model = YawRegressionModel().to(DEVICE)
+yaw_model.load_state_dict(torch.load(YAW_MODEL_PATH, map_location=DEVICE))
+yaw_model.eval()
+print("Yaw model loaded successfully!")
+print("Yaw device:", DEVICE)
 
 # =========================
 # Helper functions
@@ -69,12 +91,63 @@ def classify_head_direction(yaw):
         return "Looking Forward", "Concentrating"
 
 
-def estimate_head_pose(img_rgb):
+def clamp_box(x, y, w, h, img_w, img_h):
+    x1 = max(0, int(round(x)))
+    y1 = max(0, int(round(y)))
+    x2 = min(img_w, int(round(x + w)))
+    y2 = min(img_h, int(round(y + h)))
+    return x1, y1, max(0, x2 - x1), max(0, y2 - y1)
+
+
+def pad_box(x, y, w, h, img_w, img_h, pad_ratio=0.28):
+    pad_x = w * pad_ratio
+    pad_y = h * pad_ratio
+    return clamp_box(
+        x - pad_x,
+        y - pad_y,
+        w + (2 * pad_x),
+        h + (2 * pad_y),
+        img_w,
+        img_h
+    )
+
+
+def detect_face_box(img_rgb):
     h, w, _ = img_rgb.shape
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    gray = cv2.equalizeHist(gray)
 
-    results = face_mesh.process(img_rgb)
+    faces = []
+    for scale in (1.0, 1.5, 2.0):
+        scaled = gray if scale == 1.0 else cv2.resize(
+            gray,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
+        )
 
-    if not results.multi_face_landmarks:
+        detected = face_cascade.detectMultiScale(
+            scaled,
+            scaleFactor=1.08,
+            minNeighbors=4,
+            minSize=(28, 28)
+        )
+
+        for x, y, face_w, face_h in detected:
+            faces.append((x / scale, y / scale, face_w / scale, face_h / scale))
+
+    if len(faces) == 0:
+        return None
+
+    x, y, face_w, face_h = max(faces, key=lambda f: f[2] * f[3])
+    return pad_box(x, y, face_w, face_h, w, h)
+
+
+def estimate_head_pose(img_rgb):
+    face_box = detect_face_box(img_rgb)
+
+    if face_box is None:
         return {
             "face_detected": False,
             "yaw": None,
@@ -84,63 +157,27 @@ def estimate_head_pose(img_rgb):
             "status": "Not Concentrating"
         }
 
-    landmarks = results.multi_face_landmarks[0]
+    x, y, w, h = face_box
+    pil_frame = Image.fromarray(img_rgb)
+    x_input = yaw_transform(pil_frame).unsqueeze(0).to(DEVICE)
 
-    face_2d = []
+    with torch.no_grad():
+        raw_yaw = float(yaw_model(x_input).item())
 
-    for idx in landmark_ids:
-        lm = landmarks.landmark[idx]
-        x, y = int(lm.x * w), int(lm.y * h)
-        face_2d.append([x, y])
-
-    face_2d = np.array(face_2d, dtype=np.float64)
-
-    focal_length = w
-
-    cam_matrix = np.array([
-        [focal_length, 0, w / 2],
-        [0, focal_length, h / 2],
-        [0, 0, 1]
-    ], dtype=np.float64)
-
-    dist_matrix = np.zeros((4, 1), dtype=np.float64)
-
-    success, rot_vec, trans_vec = cv2.solvePnP(
-        face_3d,
-        face_2d,
-        cam_matrix,
-        dist_matrix,
-        flags=cv2.SOLVEPNP_ITERATIVE
-    )
-
-    if not success:
-        return {
-            "face_detected": False,
-            "yaw": None,
-            "pitch": None,
-            "roll": None,
-            "direction": "Unknown",
-            "status": "Not Concentrating"
-        }
-
-    rmat, _ = cv2.Rodrigues(rot_vec)
-    angles, _, _, _, _, _ = cv2.RQDecomp3x3(rmat)
-
-    pitch = float(angles[0])
-    yaw = float(angles[1])
-    roll = float(angles[2])
-
-    yaw = float(np.clip(yaw, -90, 90))
+    yaw = float(np.clip(raw_yaw * YAW_GAIN, -90, 90))
 
     direction, status = classify_head_direction(yaw)
 
     return {
         "face_detected": True,
         "yaw": yaw,
-        "pitch": pitch,
-        "roll": roll,
+        "pitch": None,
+        "roll": None,
         "direction": direction,
-        "status": status
+        "status": status,
+        "raw_yaw": raw_yaw,
+        "yaw_gain": YAW_GAIN,
+        "face_box": [int(x), int(y), int(w), int(h)]
     }
 
 
