@@ -87,12 +87,17 @@
                         <p class="eyebrow">Instructor</p>
                         <h2>Live Analytics</h2>
                     </div>
-                    <span class="status-pill live"><span class="pulse-dot"></span> Active</span>
+                    <span class="status-pill live"><span class="pulse-dot"></span> Live</span>
                 </div>
                 <div class="panel-body">
                     <p class="muted analytics-intro">
-                        Concentration is estimated from emotion, head direction, and phone detection signals.
+                        Concentration is estimated from emotion patterns, repeated head direction changes, and phone detection.
                     </p>
+
+                    <div class="class-alert hidden" id="classAlert">
+                        <strong>Class attention alert</strong>
+                        <span>Most students seem distracted or confused. Consider a short break, quick recap, or interactive activity.</span>
+                    </div>
 
                     <div class="kpi">
                         <div class="box accent-box">
@@ -200,8 +205,8 @@
         <div class="feedback-card">
             <div class="feedback-header">
                 <div>
-                    <div class="questionnaire-chip">AI Session Feedback</div>
-                    <h2 id="feedbackTitle">Your AI Feedback</h2>
+                    <div class="questionnaire-chip">Session Feedback</div>
+                    <h2 id="feedbackTitle">Your Session Feedback</h2>
                     <p class="muted" id="feedbackSubtitle">
                         Feedback generated from emotion, head direction, and phone detection signals.
                     </p>

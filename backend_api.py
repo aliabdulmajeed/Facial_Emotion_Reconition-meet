@@ -5,6 +5,7 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 from PIL import Image
+from PIL import ImageFilter
 import io
 import cv2
 
@@ -95,26 +96,74 @@ face_cascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
+def clamp_box(x, y, w, h, img_w, img_h):
+    x1 = max(0, int(round(x)))
+    y1 = max(0, int(round(y)))
+    x2 = min(img_w, int(round(x + w)))
+    y2 = min(img_h, int(round(y + h)))
+    return x1, y1, max(0, x2 - x1), max(0, y2 - y1)
+
+def pad_box(x, y, w, h, img_w, img_h, pad_ratio=0.24):
+    pad_x = w * pad_ratio
+    pad_y = h * pad_ratio
+    return clamp_box(
+        x - pad_x,
+        y - pad_y,
+        w + (2 * pad_x),
+        h + (2 * pad_y),
+        img_w,
+        img_h
+    )
+
+def detect_face_with_haar(img_rgb):
+    h, w, _ = img_rgb.shape
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    gray = cv2.equalizeHist(gray)
+
+    faces = []
+    for scale in (1.0, 1.5, 2.0):
+        scaled = gray if scale == 1.0 else cv2.resize(
+            gray,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
+        )
+
+        detected = face_cascade.detectMultiScale(
+            scaled,
+            scaleFactor=1.08,
+            minNeighbors=4,
+            minSize=(28, 28)
+        )
+
+        for x, y, bw, bh in detected:
+            faces.append((x / scale, y / scale, bw / scale, bh / scale))
+
+    if len(faces) == 0:
+        return None
+
+    x, y, face_w, face_h = max(faces, key=lambda f: f[2] * f[3])
+    return pad_box(x, y, face_w, face_h, w, h)
+
 def preprocess_face_from_pil(pil_img: Image.Image):
     img_rgb = np.array(pil_img.convert("RGB"))
 
-    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-
-    faces = face_cascade.detectMultiScale(
-        gray,
-        scaleFactor=1.3,
-        minNeighbors=5,
-        minSize=(60, 60)
-    )
-
-    if len(faces) == 0:
+    face_box = detect_face_with_haar(img_rgb)
+    if face_box is None:
         return None, None
 
-    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+    x, y, w, h = face_box
 
     face_rgb = img_rgb[y:y+h, x:x+w]
     pil_face = Image.fromarray(face_rgb)
+    if min(w, h) < 160:
+        scale = max(2, int(np.ceil(IMG_SIZE / max(1, min(w, h)))))
+        pil_face = pil_face.resize(
+            (max(IMG_SIZE, w * scale), max(IMG_SIZE, h * scale)),
+            Image.Resampling.LANCZOS
+        )
+    pil_face = pil_face.filter(ImageFilter.UnsharpMask(radius=1, percent=110, threshold=3))
 
     x_input = transform(pil_face)
     x_input = x_input.unsqueeze(0).to(DEVICE)

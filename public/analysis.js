@@ -2,21 +2,24 @@
 (function () {
 
     const EMOTION_SCORES = {
-        happy: 0.85,
-        neutral: 0.65,
-        surprise: 0.50,
-        fear: 0.35,
-        sad: 0.30,
-        disgust: 0.25,
-        angry: 0.20,
-        unknown: 0.50,
-        no_face: 0.20
+        happy: 0.82,
+        neutral: 0.78,
+        surprise: 0.58,
+        fear: 0.46,
+        sad: 0.48,
+        disgust: 0.44,
+        angry: 0.42,
+        unknown: 0.58,
+        no_face: 0.35
     };
 
-    const CONFIDENCE_THRESHOLD = 0.55;
+    const CONFIDENCE_THRESHOLD = 0.45;
     const HISTORY_LIMIT = 15;
-    const LOOKING_AWAY_LIMIT = 3;
+    const SESSION_RECORD_LIMIT = 500;
+    const EVENT_LIMIT = 80;
+    const LOOKING_AWAY_LIMIT = 4;
     const CONFUSION_EMOTIONS = ["fear", "surprise", "disgust"];
+    const STRESS_EMOTIONS = ["angry", "anger", "fear", "sad", "disgust"];
 
     const participantState = {};
     const classSnapshots = [];
@@ -33,16 +36,44 @@
         return String(emotion || "unknown").toLowerCase().trim();
     }
 
+    function formatEventTime(timestamp = now()) {
+        return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function addStudentEvent(tileId, type, message, severity = "medium") {
+        const state = participantState[tileId];
+        if (!state) return;
+
+        const current = now();
+        const eventKey = `${type}-${message}`;
+        const lastAt = state.eventCooldowns?.[eventKey] || 0;
+        const cooldownMs = type === "left" || type === "joined" ? 0 : 20000;
+
+        if (cooldownMs && current - lastAt < cooldownMs) return;
+        state.eventCooldowns[eventKey] = current;
+
+        state.events.push({
+            type,
+            severity,
+            message,
+            studentName: state.name,
+            timestamp: new Date(current).toISOString(),
+            displayTime: formatEventTime(current)
+        });
+
+        if (state.events.length > EVENT_LIMIT) {
+            state.events.shift();
+        }
+    }
+
     function getEngagementState(emotion, confidence = 1.0) {
         const e = normalizeEmotion(emotion);
         const baseScore = EMOTION_SCORES[e] ?? 0.50;
 
-        if (confidence < CONFIDENCE_THRESHOLD) {
-            return "Uncertain";
-        }
+        if (confidence < CONFIDENCE_THRESHOLD && e !== "neutral") return "Uncertain";
 
-        if (baseScore >= 0.60) return "Engaged";
-        if (baseScore <= 0.35) return "Not Engaged";
+        if (baseScore >= 0.62) return "Engaged";
+        if (baseScore <= 0.30) return "Not Engaged";
         return "Uncertain";
     }
 
@@ -63,7 +94,13 @@
             participantState[tileId] = {
                 name: displayName || tileId,
                 isLocal,
+                active: true,
+                joinedAt: new Date().toISOString(),
+                leftAt: null,
                 history: [],
+                sessionRecords: [],
+                events: [],
+                eventCooldowns: {},
                 currentEmotion: null,
                 currentStatus: null,
                 currentHeadDirection: null,
@@ -74,14 +111,22 @@
                 engagementScore: 50,
                 lookingAwayCount: 0
             };
+            addStudentEvent(tileId, "joined", `${displayName || tileId} joined the session`, "low");
         } else {
             participantState[tileId].name = displayName || participantState[tileId].name;
             participantState[tileId].isLocal = isLocal;
+            participantState[tileId].active = true;
+            participantState[tileId].leftAt = null;
         }
     }
 
     function removeParticipant(tileId) {
-        delete participantState[tileId];
+        const state = participantState[tileId];
+        if (state) {
+            state.active = false;
+            state.leftAt = new Date().toISOString();
+            addStudentEvent(tileId, "left", `${state.name} left the session`, "low");
+        }
         updateDashboard();
     }
 
@@ -222,6 +267,7 @@
         const kpiPhone = document.getElementById("kpiPhone");
         const kpiForward = document.getElementById("kpiForward");
         const kpiDistracted = document.getElementById("kpiDistracted");
+        const classAlert = document.getElementById("classAlert");
         if (!total) {
             if (kpiEng) kpiEng.textContent = "-";
             if (kpiTop) kpiTop.textContent = "-";
@@ -231,6 +277,7 @@
 
             const kpiRate = document.getElementById("kpiRate");
             if (kpiRate) kpiRate.textContent = "-";
+            if (classAlert) classAlert.classList.add("hidden");
 
             renderDistribution({
                 total: 0,
@@ -292,8 +339,14 @@
             addAlert(`${phoneDetected} student(s) may be using a phone`, "phone-detected");
         }
 
-        if (distractedCount >= Math.ceil(total / 2)) {
-            addAlert(`Many students may not be concentrating`, "many-distracted");
+        const majorityNeedsSupport = distractedCount >= Math.ceil(total / 2);
+
+        if (classAlert) {
+            classAlert.classList.toggle("hidden", !majorityNeedsSupport);
+        }
+
+        if (majorityNeedsSupport) {
+            addAlert(`Most students seem distracted or confused. Consider a 3-minute break, quick recap, or interactive activity.`, "many-distracted");
         }
 
         checkMultipleConfusion();
@@ -316,7 +369,11 @@
         recent.forEach((item, index) => {
             const emotion = normalizeEmotion(item.emotion);
             const confidence = item.confidence ?? 1.0;
-            const baseScore = EMOTION_SCORES[emotion] ?? 0.50;
+            let baseScore = EMOTION_SCORES[emotion] ?? 0.50;
+
+            if (STRESS_EMOTIONS.includes(emotion)) {
+                baseScore = Math.min(baseScore, 0.36);
+            }
 
             const recencyWeight = index + 1;
             const confidenceWeight = Math.max(confidence, 0.25);
@@ -336,19 +393,24 @@
             };
         }
 
-        // Looking away should NOT instantly mean not engaged.
-        // It only reduces score if repeated several times.
+        if (state.currentHeadDirection === "Looking Forward") {
+            score += 0.06;
+        }
+
+        // Looking away should not instantly mean not engaged.
+        // It gently reduces score only when repeated several times.
         if (state.lookingAwayCount >= LOOKING_AWAY_LIMIT) {
-            score -= 0.20;
+            const repeatedAwayPenalty = Math.min(0.18, 0.06 + ((state.lookingAwayCount - LOOKING_AWAY_LIMIT) * 0.03));
+            score -= repeatedAwayPenalty;
         }
 
         score = Math.max(0, Math.min(1, score));
 
         let status = "Uncertain";
 
-        if (score >= 0.60) {
+        if (score >= 0.56) {
             status = "Concentrating";
-        } else if (score >= 0.40) {
+        } else if (score >= 0.32) {
             status = "Possibly Not Concentrating";
         } else {
             status = "Not Concentrating";
@@ -386,6 +448,19 @@
 
         const result = calculateSmoothedEngagement(state);
 
+        if (STRESS_EMOTIONS.includes(cleanEmotion)) {
+            result.status = result.status === "Concentrating"
+                ? "Possibly Not Concentrating"
+                : result.status;
+            addStudentEvent(
+                tileId,
+                "emotion_warning",
+                `${state.name} may need attention (${cleanEmotion})`,
+                "high"
+            );
+            addAlert(`${state.name} may need attention`, `emotion-${tileId}`);
+        }
+
         state.engagementScore = result.score;
         state.currentStatus = result.status;
         state.finalStatus = result.status;
@@ -414,8 +489,22 @@
             dir === "Looking Away"
         ) {
             state.lookingAwayCount = (state.lookingAwayCount || 0) + 1;
+            if (state.lookingAwayCount === LOOKING_AWAY_LIMIT) {
+                addStudentEvent(
+                    tileId,
+                    "looked_away",
+                    `${state.name} looked away for about ${LOOKING_AWAY_LIMIT * 2} seconds`,
+                    "medium"
+                );
+            }
         } else if (dir === "Looking Forward") {
-            state.lookingAwayCount = 0;
+            state.lookingAwayCount = Math.max(0, (state.lookingAwayCount || 0) - 2);
+        } else if (dir === "No Face") {
+            addStudentEvent(tileId, "no_face", `${state.name} left the camera view`, "medium");
+        }
+
+        if (state.phoneDetected) {
+            addStudentEvent(tileId, "phone", `${state.name} used a phone`, "high");
         }
 
         const result = calculateSmoothedEngagement(state);
@@ -423,6 +512,27 @@
         state.engagementScore = result.score;
         state.currentStatus = result.status;
         state.finalStatus = result.status;
+
+        if (result.status === "Not Concentrating") {
+            addStudentEvent(tileId, "low_attention", `${state.name} showed low attention`, "medium");
+        } else if (result.status === "Possibly Not Concentrating") {
+            addStudentEvent(tileId, "possible_distraction", `${state.name} seemed distracted`, "medium");
+        }
+
+        state.sessionRecords.push({
+            time: new Date().toISOString(),
+            emotion: state.currentEmotion,
+            status: state.currentStatus,
+            headDirection: state.currentHeadDirection,
+            yaw: state.currentYaw,
+            phoneDetected: state.phoneDetected,
+            engagementScore: state.engagementScore,
+            lookingAwayCount: state.lookingAwayCount
+        });
+
+        if (state.sessionRecords.length > SESSION_RECORD_LIMIT) {
+            state.sessionRecords.shift();
+        }
 
         if (!state.isLocal) {
             updateDashboard();
@@ -445,9 +555,9 @@
             };
         }
 
-        const snapshotValues = classSnapshots.map(s => s.engagement);
-        const averageEngagement = snapshotValues.length
-            ? Math.round(snapshotValues.reduce((a, b) => a + b, 0) / snapshotValues.length)
+        const studentScores = students.map(([_, state]) => Number(state.engagementScore) || 0);
+        const averageEngagement = studentScores.length
+            ? Math.round(studentScores.reduce((a, b) => a + b, 0) / studentScores.length)
             : 0;
 
         const overallEmotionCounts = {};
@@ -476,7 +586,9 @@
             averageEngagement,
             mostCommonEmotion,
             lowestMomentText,
-            totalStudents: students.length
+            totalStudents: students.length,
+            activeStudents: students.filter(([_, state]) => state.active).length,
+            eventCount: students.reduce((sum, [_, state]) => sum + state.events.length, 0)
         };
     }
 
@@ -486,6 +598,9 @@
             return {
                 id,
                 name: state.name,
+                active: state.active,
+                joinedAt: state.joinedAt,
+                leftAt: state.leftAt,
                 currentEmotion: state.currentEmotion,
                 currentStatus: state.currentStatus,
                 finalStatus: state.finalStatus,
@@ -496,7 +611,9 @@
                 lookingAwayCount: state.lookingAwayCount,
                 dominantEmotion: getMajorEmotion(state.history),
                 emotionCounts: state.emotionCounts,
-                history: state.history
+                history: state.history,
+                sessionRecords: state.sessionRecords,
+                events: state.events
             };
         });
 
@@ -504,7 +621,10 @@
             room: window.roomName || "",
             generatedAt: new Date().toISOString(),
             summary: getFinalSummary(),
-            students
+            students,
+            events: students.flatMap((student) =>
+                Array.isArray(student.events) ? student.events : []
+            )
         };
     }
 
