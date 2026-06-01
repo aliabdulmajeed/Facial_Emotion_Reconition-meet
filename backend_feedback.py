@@ -83,7 +83,8 @@ def collect_signal(signal: StudentSignal):
             "leftAt": None,
             "records": [],
             "events": [],
-            "lastEventKeys": {}
+            "lastEventKeys": {},
+            "lowAttentionSince": None
         }
 
     student = session_data[room][student_id]
@@ -108,7 +109,7 @@ def collect_signal(signal: StudentSignal):
                     datetime.fromisoformat(timestamp.replace("Z", "+00:00")) -
                     datetime.fromisoformat(previous.replace("Z", "+00:00"))
                 ).total_seconds()
-                if elapsed < 30:
+                if elapsed < 120:
                     return
             except Exception:
                 return
@@ -141,10 +142,23 @@ def collect_signal(signal: StudentSignal):
         save_event("looked_away", f"{signal.studentName} looked away", "medium")
     if signal.headDirection == "No Face":
         save_event("no_face", f"{signal.studentName} left the camera view", "medium")
-    if signal.finalStatus in ["Not Concentrating", "Possibly Not Concentrating"]:
-        save_event("attention", f"{signal.studentName} showed low attention", "medium")
+    if signal.finalStatus == "Not Concentrating":
+        student["lowAttentionSince"] = student.get("lowAttentionSince") or timestamp
+        try:
+            low_attention_seconds = (
+                datetime.fromisoformat(timestamp.replace("Z", "+00:00")) -
+                datetime.fromisoformat(student["lowAttentionSince"].replace("Z", "+00:00"))
+            ).total_seconds()
+        except Exception:
+            low_attention_seconds = 0
+
+        if low_attention_seconds >= 120:
+            save_event("attention", f"{signal.studentName} had low attention for about 2 minutes", "medium")
+    else:
+        student["lowAttentionSince"] = None
+
     if emotion in ["angry", "anger", "fear", "sad", "disgust"]:
-        save_event("emotion_warning", f"{signal.studentName} may need attention ({emotion})", "high")
+        save_event("emotion_warning", f"{signal.studentName} showed repeated stress or confusion signals ({emotion})", "medium")
 
     student["records"] = student["records"][-300:]
 
@@ -513,11 +527,15 @@ def parse_visual_feedback(raw_text: str, role: str, fallback_data: Dict[str, Any
         clean_bars = []
 
         for item in bars[:6]:
+            detail = str(item.get("detail", "No detail available."))[:180]
+            if "70%" in detail or "30%" in detail or "weighted" in detail.lower():
+                detail = "Based on the combined session signals and submitted feedback."
+
             clean_bars.append({
                 "label": str(item.get("label", "Score"))[:40],
                 "score": clamp_score(item.get("score")),
                 "tone": item.get("tone", "medium") if item.get("tone") in ["low", "medium", "high"] else "medium",
-                "detail": str(item.get("detail", "No detail available."))[:180]
+                "detail": detail
             })
 
         if clean_bars:
@@ -552,7 +570,7 @@ def build_fallback_visual_feedback(role: str, data: Dict[str, Any]) -> Dict[str,
                     "label": "Concentration",
                     "score": clarity,
                     "tone": "high" if clarity >= 70 else "medium" if clarity >= 45 else "low",
-                    "detail": "Weighted from 70% live attention signals and 30% questionnaire responses."
+                    "detail": "Based on combined attention signals and submitted feedback."
                 },
                 {
                     "label": "Attention Stability",
@@ -587,12 +605,12 @@ def build_fallback_visual_feedback(role: str, data: Dict[str, Any]) -> Dict[str,
                 "tone": "high" if engagement >= 70 else "medium" if engagement >= 45 else "low",
                 "detail": "Based on your overall engagement estimate during the session."
             },
-            {
-                "label": "Concentration",
-                "score": concentration,
-                "tone": "high" if concentration >= 70 else "medium" if concentration >= 45 else "low",
-                "detail": "Weighted from 70% live attention signals and 30% questionnaire responses."
-            },
+                {
+                    "label": "Concentration",
+                    "score": concentration,
+                    "tone": "high" if concentration >= 70 else "medium" if concentration >= 45 else "low",
+                    "detail": "Based on your attention signals and submitted feedback."
+                },
             {
                 "label": "Understanding",
                 "score": understanding,
@@ -611,12 +629,12 @@ def build_fallback_visual_feedback(role: str, data: Dict[str, Any]) -> Dict[str,
                 "tone": "high" if participation >= 70 else "medium" if participation >= 45 else "low",
                 "detail": "Based on presence, camera visibility, attention signals, and session activity."
             },
-            {
-                "label": "Overall Performance",
-                "score": overall,
-                "tone": "high" if overall >= 70 else "medium" if overall >= 45 else "low",
-                "detail": f"Overall score includes a 30% questionnaire contribution and phone habit score of {habits}%."
-            }
+                {
+                    "label": "Overall Performance",
+                    "score": overall,
+                    "tone": "high" if overall >= 70 else "medium" if overall >= 45 else "low",
+                    "detail": f"Overall score reflects attention, participation, feedback, and device habits."
+                }
         ]
     }
 
@@ -717,7 +735,7 @@ Rules:
 - Do not write paragraphs.
 - Do not include raw student names in instructor details.
 - Treat neutral emotion as normal concentration, not a problem.
-- Questionnaire answers must affect feedback scores by 30%; live session analytics affect scores by 70%.
+- Use the weighted scores from the structured JSON internally, but do not mention weighting percentages or formulas to users.
 - The structured JSON includes feedbackWeights and weighted scores. Prefer those weighted scores when choosing bar values.
 - Mention uncertainty only briefly if useful.
 - Student bars should cover: engagement, concentration, understanding, stress/confusion, participation, overall performance.

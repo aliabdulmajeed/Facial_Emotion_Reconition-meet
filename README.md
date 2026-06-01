@@ -16,7 +16,7 @@ The system is designed for research and academic use. Its computer-vision and LL
 - Questionnaire flow for students and instructors.
 - Groq LLM feedback for both students and instructors.
 - Feedback bars with expandable "View Details" evidence.
-- Questionnaire answers affect feedback scores by 30%; live analytics affect scores by 70%.
+- Questionnaire answers and live analytics are combined internally for feedback scoring.
 - Clean responsive GUI for desktop, tablet, and mobile.
 
 ## System Architecture
@@ -58,7 +58,7 @@ fer-meet/
     Head-pose and phone-distraction FastAPI service.
     Endpoint: POST /pose_phone
     Default port: 6001
-    Models: best_yaw_model.pth, yolov8n.pt
+    Models: MediaPipe FaceMesh/OpenCV solvePnP head pose, yolov8n.pt
 
   backend_feedback.py
     Questionnaire storage, session event collection, and Groq feedback service.
@@ -98,9 +98,6 @@ fer-meet/
 
   savedmodel_clcm/
     TensorFlow SavedModel export of the FER model.
-
-  best_yaw_model.pth
-    PyTorch yaw-regression model for head direction.
 
   yolov8n.pt
     YOLO model used for phone detection.
@@ -253,12 +250,8 @@ Use the generated Cloudflare URL for external participants.
    - low-attention events
 7. Session signals are also sent to `backend_feedback.py` through `/api/collect`.
 8. When a user leaves or the instructor ends the session, the questionnaire opens.
-9. The feedback backend combines:
-   - 70% live session analytics
-   - 30% questionnaire answers
-   - session event history
-   - emotion trends
-   - engagement and concentration scores
+9. The feedback backend combines live analytics, questionnaire answers,
+   session event history, emotion trends, and engagement/concentration scores.
 10. Groq generates short visual feedback bars with expandable details.
 
 ## Feedback Design

@@ -733,11 +733,11 @@ async function leaveMeetingNow() {
 const FER_ENABLED = true;
 const FER_API_URL = "/api/predict";
 const POSE_PHONE_API_URL = "/api/pose_phone";
-const FER_INTERVAL_MS = 2000;
+const FER_INTERVAL_MS = 7000;
 const FER_INSTRUCTOR_ONLY = true;
 const ANALYSIS_FRAME_WIDTH = 640;
-const HEAD_LEFT_THRESHOLD = -7;
-const HEAD_RIGHT_THRESHOLD = 7;
+const HEAD_LEFT_THRESHOLD = -27;
+const HEAD_RIGHT_THRESHOLD = 27;
 const HEAD_BASELINE_SAMPLES = 3;
 
 const ferCanvas = document.createElement("canvas");
@@ -866,7 +866,7 @@ function getTopEmotionText(emotionCounts = {}) {
 function getQuestionnaireDetail(context = {}) {
     const backendSummary = context.sessionData?.questionnaires;
     if (backendSummary?.averageRating !== undefined && backendSummary?.averageRating !== null) {
-        return `Questionnaire average: ${backendSummary.averageRating}/5. This contributes 30% of the feedback score.`;
+        return `Questionnaire responses were considered alongside the live session signals.`;
     }
 
     const questionnaire = getStoredQuestionnaire();
@@ -879,7 +879,7 @@ function getQuestionnaireDetail(context = {}) {
         ? `Lowest answer: Q${lowest.questionNumber} scored ${lowest.rating}/5.`
         : "No rated questionnaire items were found.";
 
-    return `Questionnaire average: ${questionnaire.averageRating}/5. ${lowText} This contributes 30% of the feedback score.`;
+    return `Questionnaire responses were considered alongside the live session signals. ${lowText}`;
 }
 
 function getEventDetail(events = [], emptyText = "No important events were recorded.") {
@@ -900,7 +900,7 @@ function buildFeedbackDetailLines(bar, context = {}) {
         lines.push(`Main reason: ${bar.detail}`);
     }
 
-    lines.push(`Score meaning: ${score}% uses 70% live session analytics and 30% questionnaire answers.`);
+    lines.push(`Score meaning: ${score}% reflects the available session signals and submitted feedback.`);
 
     if (context.role === "student") {
         const student = context.ownRecord;
@@ -1068,7 +1068,7 @@ function getSmoothedHeadPose(tileId, headPose) {
     const previous = poseStateByTile.get(tileId) || {
         baselineSamples: [],
         baseline: null,
-        yaw: rawYaw
+        yaw: null
     };
 
     let baseline = previous.baseline;

@@ -15,6 +15,9 @@
 
     const CONFIDENCE_THRESHOLD = 0.45;
     const HISTORY_LIMIT = 15;
+    const DASHBOARD_WINDOW_MS = 7000;
+    const SUSTAINED_ALERT_MS = 120000;
+    const ALERT_COOLDOWN_MS = 120000;
     const SESSION_RECORD_LIMIT = 500;
     const EVENT_LIMIT = 80;
     const LOOKING_AWAY_LIMIT = 4;
@@ -27,6 +30,7 @@
     const cooldowns = {};
 
     let sessionStartedAt = Date.now();
+    let classNeedsSupportSince = null;
 
     function now() {
         return Date.now();
@@ -109,7 +113,8 @@
                 finalStatus: null,
                 emotionCounts: {},
                 engagementScore: 50,
-                lookingAwayCount: 0
+                lookingAwayCount: 0,
+                notConcentratingSince: null
             };
             addStudentEvent(tileId, "joined", `${displayName || tileId} joined the session`, "low");
         } else {
@@ -137,9 +142,8 @@
 
     function addAlert(message, key = "general") {
         const current = now();
-        const cooldownMs = 12000;
 
-        if (cooldowns[key] && current - cooldowns[key] < cooldownMs) return;
+        if (cooldowns[key] && current - cooldowns[key] < ALERT_COOLDOWN_MS) return;
         cooldowns[key] = current;
 
         alerts.unshift({
@@ -147,7 +151,7 @@
             at: new Date().toLocaleTimeString()
         });
 
-        if (alerts.length > 8) alerts.pop();
+        if (alerts.length > 5) alerts.pop();
         renderAlerts();
     }
 
@@ -242,9 +246,7 @@
         const prevState = getEngagementState(prevMajor);
         const currState = getEngagementState(currMajor);
 
-        if (prevState === "Engaged" && currState === "Not Engaged") {
-            addAlert(`${state.name} lost engagement`, `drop-${tileId}`);
-        }
+        if (prevState === "Engaged" && currState === "Not Engaged") return;
     }
 
     function checkMultipleConfusion() {
@@ -253,14 +255,13 @@
             CONFUSION_EMOTIONS.includes(normalizeEmotion(state.currentEmotion))
         );
 
-        if (confused.length >= 2) {
-            addAlert(`Multiple students may be confused`, "multi-confusion");
-        }
+        if (confused.length >= 2) return;
     }
 
     function updateDashboard() {
         const students = getTrackedStudents();
         const total = students.length;
+        const cutoff = now() - DASHBOARD_WINDOW_MS;
 
         const kpiEng = document.getElementById("kpiEng");
         const kpiTop = document.getElementById("kpiTop");
@@ -299,18 +300,42 @@
 
         const emotionCounts = {};
 
-        students.forEach(([_, state]) => {
-            const emotion = normalizeEmotion(state.currentEmotion);
-            emotionCounts[emotion] = (emotionCounts[emotion] || 0) + 1;
+        students.forEach(([tileId, state]) => {
+            const recentRecords = (state.sessionRecords || []).filter((record) => {
+                const time = new Date(record.time).getTime();
+                return Number.isFinite(time) && time >= cutoff;
+            });
+            const latestRecord = recentRecords[recentRecords.length - 1] || null;
+            const emotionSource = latestRecord?.emotion || state.currentEmotion;
+            const emotion = normalizeEmotion(emotionSource);
 
-            const finalStatus = state.finalStatus || state.currentStatus || "Unknown";
+            if (emotion && emotion !== "unknown") {
+                emotionCounts[emotion] = (emotionCounts[emotion] || 0) + 1;
+            }
+
+            const finalStatus = latestRecord?.status || state.finalStatus || state.currentStatus || "Unknown";
+            const headDirection = latestRecord?.headDirection || state.currentHeadDirection;
+            const hasPhone = latestRecord ? !!latestRecord.phoneDetected : !!state.phoneDetected;
 
             if (finalStatus === "Concentrating") concentrating++;
             else if (finalStatus === "Possibly Not Concentrating") possiblyNot++;
             else notConcentrating++;
 
-            if (state.currentHeadDirection === "Looking Forward") lookingForward++;
-            if (state.phoneDetected) phoneDetected++;
+            if (headDirection === "Looking Forward") lookingForward++;
+            if (hasPhone) phoneDetected++;
+
+            if (hasPhone) {
+                addAlert(`${state.name} may be using a phone`, `phone-${tileId}`);
+            }
+
+            if (finalStatus === "Not Concentrating") {
+                state.notConcentratingSince = state.notConcentratingSince || now();
+                if (now() - state.notConcentratingSince >= SUSTAINED_ALERT_MS) {
+                    addAlert(`${state.name} has not been concentrating for about 2 minutes`, `sustained-attention-${tileId}`);
+                }
+            } else {
+                state.notConcentratingSince = null;
+            }
         });
 
         const concentrationPercent = Math.round((concentrating / total) * 100);
@@ -335,18 +360,25 @@
             emotionCounts
         });
 
-        if (phoneDetected > 0) {
-            addAlert(`${phoneDetected} student(s) may be using a phone`, "phone-detected");
-        }
-
         const majorityNeedsSupport = distractedCount >= Math.ceil(total / 2);
-
-        if (classAlert) {
-            classAlert.classList.toggle("hidden", !majorityNeedsSupport);
-        }
+        const currentTime = now();
 
         if (majorityNeedsSupport) {
-            addAlert(`Most students seem distracted or confused. Consider a 3-minute break, quick recap, or interactive activity.`, "many-distracted");
+            classNeedsSupportSince = classNeedsSupportSince || currentTime;
+        } else {
+            classNeedsSupportSince = null;
+        }
+
+        const sustainedClassAlert =
+            classNeedsSupportSince !== null &&
+            currentTime - classNeedsSupportSince >= SUSTAINED_ALERT_MS;
+
+        if (classAlert) {
+            classAlert.classList.toggle("hidden", !sustainedClassAlert);
+        }
+
+        if (sustainedClassAlert) {
+            addAlert(`Most students have needed attention for about 2 minutes. Consider a short recap or interactive activity.`, "many-distracted");
         }
 
         checkMultipleConfusion();
@@ -458,7 +490,6 @@
                 `${state.name} may need attention (${cleanEmotion})`,
                 "high"
             );
-            addAlert(`${state.name} may need attention`, `emotion-${tileId}`);
         }
 
         state.engagementScore = result.score;
@@ -467,7 +498,6 @@
 
         if (!state.isLocal) {
             checkSuddenDrop(tileId, state);
-            updateDashboard();
         }
     }
 
@@ -652,6 +682,8 @@
 
         return summary;
     }
+
+    setInterval(updateDashboard, DASHBOARD_WINDOW_MS);
 
     window.Analysis = {
         setParticipant,
